@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "litedocs-mcp"
+version = "0.1.0"
+description = "Search a folder of Markdown and AsciiDoc over MCP. SQLite FTS5, Python stdlib only, no embeddings, no Docker."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+keywords = ["mcp", "model-context-protocol", "documentation", "search", "sqlite", "fts5", "asciidoc", "markdown"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/gowthamraj07/litedocs-mcp"
+Issues = "https://github.com/gowthamraj07/litedocs-mcp/issues"
+
+[project.scripts]
+litedocs-mcp = "litedocs_mcp:main"
+
+[tool.setuptools]
+py-modules = ["litedocs_mcp"]
