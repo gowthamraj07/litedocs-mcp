@@ -217,6 +217,74 @@ That is a deliberate design goal, not an accident — the intended use case is d
 
 ---
 
+## Searching history: `litedocs-history`
+
+A second, separate server for a different question: **what did the docs used to say?**
+
+If your documentation lives in git — a GitHub wiki is an ordinary git repo at `https://github.com/OWNER/REPO.wiki.git` — then every version of every page is still there. `litedocs-history` indexes all of them, so you can search text that has since been deleted and find out exactly when it was live and who changed it.
+
+It is a separate entry point with its own index file, on purpose. Tool descriptions cost context on every turn, and history search is something you need rarely. Enable it when you are auditing; leave it off the rest of the time.
+
+```bash
+git clone https://github.com/OWNER/REPO.wiki.git ~/work/project.wiki
+litedocs-history --repo ~/work/project.wiki --index
+```
+
+```
+$ litedocs-history --repo ~/work/project.wiki --search "three business days settle"
+1 match(es) for 'three business days settle' across the full history:
+
+Payments.md — Payments.md > Payments > Settlement
+  added  2026-01-15 by alice (efc8779e)
+  status REMOVED 2026-05-20 by carol (17fa2521)
+  ## Settlement Funds **settle** within **three** **business** **days** of authorisation.
+```
+
+That text exists nowhere in the working tree. Ordinary grep cannot find it.
+
+### Tools
+
+| Tool | Answers |
+|---|---|
+| `search_history(query, limit, only_removed)` | "Did the docs ever say something like this, and when?" Fuzzy, ranked, finds deleted text. |
+| `when_documented(text, path)` | "Which commit added this exact sentence, and which removed it?" Git pickaxe, literal match, author and date. |
+| `page_history(path, limit)` | "How has this page changed?" Follows renames. |
+
+The intended flow is two-stage: `search_history` to *find* the wording, `when_documented` to *prove* the provenance.
+
+### CLI
+
+```
+--repo PATH        Clone of the docs/wiki git repo. Required.
+--db PATH          Index file. Default: <repo>/.litedocs-history.sqlite3
+--index            Build the index and exit (skipped if refs are unchanged).
+--force            Rebuild even if nothing has changed.
+--search QUERY     Search all history.
+--only-removed     Restrict to text that no longer exists.
+--when TEXT        Pickaxe a literal phrase. Needs no index.
+--page PATH        Revisions of one page. Needs no index.
+```
+
+### How it stays cheap
+
+Indexing every version of every page sounds expensive. It isn't, because of two things.
+
+Git stores one blob per distinct content, so a page edited fifty times contributes fifty blobs, not fifty copies of the repo. All of them are read in a single `git cat-file --batch` call.
+
+More importantly, **section lifetimes are collapsed**. A section that survives twenty edits to other parts of its page becomes *one* row spanning the whole period it was live — not twenty near-identical search hits. So the index is sized by how much the docs actually changed, and results read as "this was true from January to May" rather than as a wall of duplicates.
+
+### Limits worth knowing
+
+**Git history is not tamper-evident.** GitHub wikis, as far as I know, support neither branch protection nor required reviews, so anyone with write access can force-push. This tool reports faithfully what the history contains; it cannot tell you the history was never rewritten. If the audit trail genuinely matters, mirror the wiki on a schedule into a repo you control.
+
+**The repo is not a record of what anyone read.** A commit date establishes what the docs said on a given day. It does not establish that a particular person saw it. Pair it with a ticket or a decision record for that.
+
+**Merge commits are skipped**, as `git log --raw` does by default. Wiki histories are linear in practice; a heavily merged docs repo may miss changes that only exist in a merge resolution.
+
+**`when_documented` is a literal match.** It is git's pickaxe — character for character, no stemming. Use `search_history` first to find the real wording.
+
+---
+
 ## Contributing
 
 Issues and pull requests welcome. Two things worth preserving if you send a patch: zero runtime dependencies, and a single auditable file. Both are features.

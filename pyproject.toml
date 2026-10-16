@@ -18,6 +18,7 @@ Issues = "https://github.com/gowthamraj07/litedocs-mcp/issues"
 
 [project.scripts]
 litedocs-mcp = "litedocs_mcp:main"
+litedocs-history = "litedocs_history:main"
 
 [tool.setuptools]
-py-modules = ["litedocs_mcp"]
+py-modules = ["litedocs_mcp", "litedocs_history"]
