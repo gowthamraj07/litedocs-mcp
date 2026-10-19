@@ -471,12 +471,27 @@ def serve(conn, repo, exts):
 
         if method == "initialize":
             result = {"protocolVersion": params.get("protocolVersion", "2025-06-18"),
-                      "capabilities": {"tools": {}},
+                      "capabilities": {"tools": {"listChanged": False}},
                       "serverInfo": {"name": "litedocs-history", "version": VERSION}}
         elif method == "tools/list":
             result = {"tools": TOOLS}
+        elif method == "resources/list":
+            result = {"resources": []}
+        elif method == "resources/templates/list":
+            result = {"resourceTemplates": []}
+        elif method == "prompts/list":
+            result = {"prompts": []}
+        elif method == "ping":
+            result = {}
         elif method == "tools/call":
-            name, args = params.get("name"), params.get("arguments") or {}
+            name, args = params.get("name"), params.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {"query": args}
+            if not isinstance(args, dict):
+                args = {}
             try:
                 if name == "search_history":
                     q = (args.get("query") or "").strip()
@@ -490,8 +505,9 @@ def serve(conn, repo, exts):
                     result = text_result(page_history(
                         repo, args.get("path") or "", int(args.get("limit") or 30)))
                 else:
-                    result = text_result("Unknown tool: %s" % name)
-                    result["isError"] = True
+                    result = text_result(
+                        "This server has no tool named %r. It provides exactly: %s."
+                        % (name, ", ".join(t["name"] for t in TOOLS)))
             except Exception as e:
                 result = text_result("Tool error: %s" % e)
                 result["isError"] = True

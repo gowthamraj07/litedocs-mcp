@@ -269,24 +269,38 @@ def search(conn, query, limit=5):
     return results
 
 
-def format_results(rows, query):
+def format_results(rows, query, root=None):
+    """Render hits for an agent.
+
+    Paths are ABSOLUTE. A relative path here is resolved by the caller's own
+    file-reading tool against ITS working directory, which is not the docs
+    root, so every follow-up read fails.
+
+    The closing line deliberately does not name a tool. Telling the model to
+    "read the file" next to a server called `docs` invites it to invent a
+    `read_docs` tool on this server and then fail calling it.
+    """
     if not rows:
-        return "No sections matched %r. Try fewer or different keywords." % query
+        return ("No sections matched %r. Try fewer or different keywords, "
+                "or call list_docs to see what is indexed." % query)
     out = ["%d section(s) for %r:" % (len(rows), query), ""]
     for r in rows:
-        out.append("%s:%s-%s" % (r["path"], r["start_line"], r["end_line"]))
+        path = os.path.join(root, r["path"]) if root else r["path"]
+        out.append("%s:%s-%s" % (path, r["start_line"], r["end_line"]))
         out.append("  %s" % r["breadcrumb"])
         out.append("  %s" % " ".join(r["snip"].split()))
         out.append("")
-    out.append("Read a file at the line range above for the full section.")
+    out.append("These are absolute paths. For the full section, open one with your "
+               "own file-reading tool at the line range shown. This server has no "
+               "file-reading tool of its own.")
     return "\n".join(out)
 
 
-def format_listing(conn):
+def format_listing(conn, root=None):
     rows = conn.execute("SELECT path, title FROM files ORDER BY path").fetchall()
     if not rows:
-        return "The index is empty. Run the reindex tool."
-    lines = ["%d documents:" % len(rows), ""]
+        return "The index is empty. Call reindex_docs."
+    lines = ["%d documents under %s:" % (len(rows), root or "the docs root"), ""]
     lines += ["%s — %s" % (r["path"], r["title"]) for r in rows]
     return "\n".join(lines)
 
@@ -300,17 +314,18 @@ TOOLS = [
         "name": "search_docs",
         "description": (
             "Full-text search over the local documentation knowledge base. "
-            "Returns the best-matching sections with file path, line range, "
-            "heading breadcrumb and a snippet. Prefer this over grepping or "
-            "reading whole files: pass 3-6 distinctive keywords rather than a "
-            "full sentence. Wrap a phrase in double quotes for an exact match."
+            "Returns the best-matching sections as ABSOLUTE file path, line "
+            "range, heading breadcrumb and a snippet. Prefer this over grepping "
+            "or reading whole files: pass 3-6 distinctive keywords rather than a "
+            "full sentence. Wrap a phrase in double quotes for an exact match. "
+            "To read a result in full, use your OWN file-reading tool on the "
+            "absolute path returned; this server does not read files."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Keywords to search for."},
-                "limit": {"type": "integer", "description": "Max sections (default 5).",
-                          "minimum": 1, "maximum": 20},
+                "limit": {"type": "integer", "description": "Max sections (default 5)."},
             },
             "required": ["query"],
         },
@@ -318,16 +333,30 @@ TOOLS = [
     {
         "name": "list_docs",
         "description": ("List every indexed document as path plus title. Use when "
-                        "you need a map of the knowledge base rather than an answer."),
-        "inputSchema": {"type": "object", "properties": {}},
+                        "you need a map of the knowledge base rather than an answer. "
+                        "Takes no arguments."),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "reindex_docs",
         "description": ("Rescan the docs folder and refresh the index. Run after a "
-                        "git pull; it only reprocesses files whose content changed."),
-        "inputSchema": {"type": "object", "properties": {}},
+                        "git pull; it only reprocesses files whose content changed. "
+                        "Takes no arguments."),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
 ]
+
+TOOL_NAMES = [t["name"] for t in TOOLS]
+
+
+def coerce_limit(value, default=5):
+    """Models pass "5", 5.0 or "five". Never let that surface as a tool error."""
+    if value in (None, ""):
+        return default
+    try:
+        return max(1, min(20, int(float(value))))
+    except (TypeError, ValueError):
+        return default
 
 
 def text_result(text):
@@ -351,22 +380,46 @@ def serve(conn, root, exts):
         if method == "initialize":
             result = {
                 "protocolVersion": params.get("protocolVersion", "2025-06-18"),
-                "capabilities": {"tools": {}},
+                "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "litedocs-mcp", "version": VERSION},
             }
         elif method == "tools/list":
             result = {"tools": TOOLS}
+        # Clients probe these at startup even when the server declares no such
+        # capability. Answering -32601 reads to the client as "this server is
+        # broken" and can abort the session, so answer empty instead.
+        elif method == "resources/list":
+            result = {"resources": []}
+        elif method == "resources/templates/list":
+            result = {"resourceTemplates": []}
+        elif method == "prompts/list":
+            result = {"prompts": []}
+        elif method == "ping":
+            result = {}
         elif method == "tools/call":
             name = params.get("name")
-            args = params.get("arguments") or {}
+            args = params.get("arguments")
+            if isinstance(args, str):           # some clients send a JSON string
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {"query": args}
+            if not isinstance(args, dict):
+                args = {}
             try:
                 if name == "search_docs":
-                    query = (args.get("query") or "").strip()
-                    limit = int(args.get("limit") or 5)
-                    result = text_result(
-                        format_results(search(conn, query, limit), query))
+                    query = str(args.get("query") or args.get("q") or "").strip()
+                    if not query:
+                        result = text_result(
+                            "search_docs needs a 'query' string, e.g. "
+                            '{"query": "retry policy"}. Available tools: %s.'
+                            % ", ".join(TOOL_NAMES))
+                    else:
+                        result = text_result(format_results(
+                            search(conn, query, coerce_limit(args.get("limit"))),
+                            query, root))
                 elif name == "list_docs":
-                    result = text_result(format_listing(conn))
+                    result = text_result(format_listing(conn, root))
                 elif name == "reindex_docs":
                     stats = reindex(conn, root, exts)
                     result = text_result(
@@ -374,8 +427,13 @@ def serve(conn, root, exts):
                         "(%(added)d new, %(changed)d updated, %(removed)d removed)."
                         % stats)
                 else:
-                    result = text_result("Unknown tool: %s" % name)
-                    result["isError"] = True
+                    # Not flagged as an error: a hallucinated tool name should
+                    # let the model self-correct, not count toward the client's
+                    # repeated-failure cutoff.
+                    result = text_result(
+                        "This server has no tool named %r. It provides exactly: %s. "
+                        "It cannot read files — use your own file-reading tool for "
+                        "that." % (name, ", ".join(TOOL_NAMES)))
             except Exception as e:  # never kill the server on one bad call
                 result = text_result("Tool error: %s" % e)
                 result["isError"] = True
@@ -428,7 +486,7 @@ def main():
         print("Index: %s" % db_path)
         return
     if args.search:
-        print(format_results(search(conn, args.search, args.limit), args.search))
+        print(format_results(search(conn, args.search, args.limit), args.search, root))
         return
 
     log("indexed %(files)d files, %(chunks)d sections" % stats)
